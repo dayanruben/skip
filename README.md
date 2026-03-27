@@ -53,6 +53,12 @@ Both modes map SwiftUI to Jetpack Compose using the [SkipUI](https://github.com/
 
 - **Free and open source.** Skip is complete free and developed independently from any parent corporation, funded by [your sponsorship](https://skip.dev/sponsor/).
 
+### Skip versus {Flutter/React Native/Compose Multiplatform/MAUI/etc.}
+
+Choosing a technology to help you build an app for iOS and Android from a single codebase can be a make-or-break decision. Everyone knows a bad app or a crummy port within moments of launching the app, and consumers are ruthless in deleting bloated, slow, or "weird-feeling" apps within moments.
+
+You can read our own assessment of Skip's strengths at [skip.dev/compare/](https://skip.dev/compare/).
+
 ## Quick Start
 
 Install Skip with [Homebrew](https://brew.sh), verify your environment, and create your first project:
@@ -167,6 +173,7 @@ For more on how Skip projects are structured, see:
 | Sample Apps | [skip.dev/docs/samples](https://skip.dev/docs/samples/) |
 | Component Gallery | [skip.dev/docs/components](https://skip.dev/docs/components/) |
 | CLI Reference | [skip.dev/docs/skip-cli](https://skip.dev/docs/skip-cli/) |
+| Competitor analysis | [skip.dev/compare/](https://skip.dev/compare/) |
 
 ## Community
 
