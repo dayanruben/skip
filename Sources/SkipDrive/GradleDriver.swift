@@ -13,6 +13,16 @@ import FoundationXML
 /// user's `PATH` environment.
 @available(macOS 13, macCatalyst 16, iOS 16, tvOS 16, watchOS 8, *)
 public struct GradleDriver {
+    public struct ParsedTestResults {
+        public var testSuites: [TestSuite]
+        public var resultFiles: [URL]
+
+        public init(testSuites: [TestSuite], resultFiles: [URL]) {
+            self.testSuites = testSuites
+            self.resultFiles = resultFiles
+        }
+    }
+
     /// The minimum version of Kotlin we can work with
     public static let minimumKotlinVersion = Version(1, 8, 0)
 
@@ -107,7 +117,7 @@ public struct GradleDriver {
     ///   - exitHandler: the exit handler, which may want to permit a process failure in order to have time to parse the tests
     /// - Returns: an array of parsed test suites containing information about the test run
     @available(macOS 13, macCatalyst 16, iOS 16, tvOS 16, watchOS 8, *)
-    public func launchGradleProcess(in workingDirectory: URL?, buildFolder: String = ".build", module: String?, actions: [String], arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environmentWithDefaultToolPaths, daemon enableDaemon: Bool = true, info infoFlag: Bool = false, quiet quietFlag: Bool = false, plain plainFlag: Bool = true, maxMemory: UInt64? = nil, failFast failFastFlag: Bool = false, noBuildCache noBuildCacheFlag: Bool = false, continue continueFlag: Bool = false, offline offlineFlag: Bool = false, rerunTasks rerunTasksFlag: Bool = true, exitHandler: @escaping (ProcessResult) throws -> ()) async throws -> (output: AsyncLineOutput, result: () throws -> [TestSuite]) {
+    public func launchGradleProcess(in workingDirectory: URL?, buildFolder: String = ".build", module: String?, actions: [String], arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environmentWithDefaultToolPaths, daemon enableDaemon: Bool = true, info infoFlag: Bool = false, quiet quietFlag: Bool = false, plain plainFlag: Bool = true, maxMemory: UInt64? = nil, failFast failFastFlag: Bool = false, noBuildCache noBuildCacheFlag: Bool = false, continue continueFlag: Bool = false, offline offlineFlag: Bool = false, rerunTasks rerunTasksFlag: Bool = true, exitHandler: @escaping (ProcessResult) throws -> ()) async throws -> (output: AsyncLineOutput, result: () throws -> ParsedTestResults) {
 
 
         var args = actions + arguments
@@ -122,7 +132,7 @@ public struct GradleDriver {
         // this enables reporting on deprecated features
         args += ["--warning-mode", "all"]
 
-        var testResultFolder: URL? = nil
+        var testResultFolders: [URL] = []
 
         if let module = module {
             let moduleURL = URL(fileURLWithPath: module, isDirectory: true, relativeTo: workingDirectory)
@@ -133,7 +143,8 @@ public struct GradleDriver {
             let buildDir = "\(buildFolder)/\(module)"
             let testResultPath = "\(buildDir)/test-results"
             args += ["-PbuildDir=\(buildDir)"]
-            testResultFolder = URL(fileURLWithPath: testResultPath, isDirectory: true, relativeTo: moduleURL)
+            let testResultFolder = URL(fileURLWithPath: testResultPath, isDirectory: true, relativeTo: moduleURL)
+            testResultFolders = Self.testResultFolders(for: testResultFolder, actions: actions)
         }
 
         // this allows multiple simultaneous gradle builds to take place
@@ -218,7 +229,7 @@ public struct GradleDriver {
 
         }
 
-        if let testResultFolder = testResultFolder {
+        for testResultFolder in testResultFolders {
             #if os(macOS)
             try? FileManager.default.trashItem(at: testResultFolder, resultingItemURL: nil) // remove the test folder, since a build failure won't clear it and it will appear as if the tests ran successfully
             #else
@@ -227,7 +238,67 @@ public struct GradleDriver {
         }
 
         let output = try await execGradle(in: workingDirectory, args: args, env: env, onExit: exitHandler)
-        return (output, { try Self.parseTestResults(in: testResultFolder) })
+        return (output, { try Self.parseTestResults(in: testResultFolders) })
+    }
+
+    static func testResultFolders(for testResultFolder: URL, actions: [String]) -> [URL] {
+        if actions.contains(where: { $0.hasPrefix("connected") }) {
+            let buildFolder = testResultFolder.deletingLastPathComponent()
+            let connectedRoot = buildFolder
+                .appendingPathComponent("outputs", isDirectory: true)
+                .appendingPathComponent("androidTest-results", isDirectory: true)
+                .appendingPathComponent("connected", isDirectory: true)
+            let variantFolders = connectedTestVariants(for: actions).map {
+                connectedRoot.appendingPathComponent($0, isDirectory: true)
+            }
+            return variantFolders + [connectedRoot]
+        }
+
+        return [testResultFolder]
+    }
+
+    public static func connectedTestVariants(for actions: [String]) -> [String] {
+        var variants: [String] = []
+        for action in actions {
+            guard let variant = connectedTestVariant(for: action), !variants.contains(variant) else {
+                continue
+            }
+            variants.append(variant)
+        }
+        return variants
+    }
+
+    public static func connectedTestVariant(for action: String) -> String? {
+        guard action.hasPrefix("connected"), action.hasSuffix("AndroidTest") else {
+            return nil
+        }
+
+        let start = action.index(action.startIndex, offsetBy: "connected".count)
+        let end = action.index(action.endIndex, offsetBy: -"AndroidTest".count)
+        let variant = String(action[start..<end])
+        guard !variant.isEmpty else {
+            return nil
+        }
+
+        return variant.prefix(1).lowercased() + variant.dropFirst()
+    }
+
+    public static func connectedResultVariant(for resultFile: URL) -> String? {
+        let components = resultFile.standardizedFileURL.pathComponents
+        guard let connectedIndex = components.firstIndex(of: "connected"),
+              components.indices.contains(connectedIndex + 1) else {
+            return nil
+        }
+
+        return components[connectedIndex + 1]
+    }
+
+    public static func unitTestResultFolderName(forConnectedResultFiles resultFiles: [URL]) -> String {
+        guard let variant = resultFiles.compactMap(connectedResultVariant(for:)).first else {
+            return "testDebugUnitTest"
+        }
+
+        return "test" + variant.prefix(1).uppercased() + variant.dropFirst() + "UnitTest"
     }
 
     /// Executes `skiptool info` and returns the info dictionary.
@@ -509,13 +580,20 @@ public struct GradleDriver {
 
         #if os(macOS) || os(Linux) || targetEnvironment(macCatalyst)
         init(from element: XMLElement, in url: URL) throws {
-            guard let message = element.attribute(forName: "message")?.stringValue else {
-                throw GradleDriverError.missingProperty(url: url, propertyName: "message")
-            }
-
             let type = element.attribute(forName: "type")?.stringValue
 
             let contents = element.stringValue
+            // Connected Android reports can omit the failure message attribute and
+            // only provide the assertion text in the element body.
+            let message = element.attribute(forName: "message")?.stringValue
+                ?? contents?
+                    .split(separator: "\n", maxSplits: 1)
+                    .first?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard let message, !message.isEmpty else {
+                throw GradleDriverError.missingProperty(url: url, propertyName: "message")
+            }
             
             self.message = message
             self.type = type
@@ -524,15 +602,11 @@ public struct GradleDriver {
         #endif
     }
 
-    private static func parseTestResults(in testFolder: URL?) throws -> [TestSuite] {
-        guard let testFolder = testFolder else {
-            return []
+    static func parseTestResults(in testFolders: [URL]) throws -> ParsedTestResults {
+        guard !testFolders.isEmpty else {
+            return ParsedTestResults(testSuites: [], resultFiles: [])
         }
         let fm = FileManager.default
-        if !fm.fileExists(atPath: testFolder.path) {
-            // missing folder
-            throw GradleDriverError("The expected test output folder did not exist, which may indicate that the gradle process encountered a build error or other issue. Missing folder: \(testFolder.path)")
-        }
 
         func parseTestSuite(resultURL: URL) throws -> [TestSuite] {
             if try resultURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory != false {
@@ -547,12 +621,40 @@ public struct GradleDriver {
             return try TestSuite.parse(contentsOf: resultURL)
         }
 
-        let dirs = try fm.contentsOfDirectory(at: testFolder, includingPropertiesForKeys: [.isDirectoryKey])
+        func xmlResults(in testFolder: URL) throws -> [URL] {
+            guard fm.fileExists(atPath: testFolder.path) else {
+                return []
+            }
 
-        // check each subdir (e.g., "build/test-results/test" and "build/test-results/testDebugUnitTest/" and "build/test-results/testReleaseUnitTest/"
-        let subdirs = try dirs.flatMap({ try fm.contentsOfDirectory(at: $0, includingPropertiesForKeys: [.isDirectoryKey]) })
+            var results: [URL] = []
+            if let enumerator = fm.enumerator(at: testFolder, includingPropertiesForKeys: [.isDirectoryKey]) {
+                for case let resultURL as URL in enumerator {
+                    if resultURL.pathExtension.lowercased() == "xml" {
+                        results.append(resultURL)
+                    }
+                }
+            }
+            return results.sorted { $0.path < $1.path }
+        }
 
-        return try Array(subdirs.compactMap(parseTestSuite).joined())
+        let existingFolders = testFolders.filter { fm.fileExists(atPath: $0.path) }
+        guard !existingFolders.isEmpty else {
+            let folders = testFolders.map(\.path).joined(separator: ", ")
+            throw GradleDriverError("The expected test output folder did not exist, which may indicate that the gradle process encountered a build error or other issue. Missing folders: \(folders)")
+        }
+
+        for testFolder in existingFolders {
+            let results = try xmlResults(in: testFolder)
+            if !results.isEmpty {
+                return ParsedTestResults(
+                    testSuites: try Array(results.compactMap(parseTestSuite).joined()),
+                    resultFiles: results
+                )
+            }
+        }
+
+        let folders = existingFolders.map(\.path).joined(separator: ", ")
+        throw GradleDriverError("The expected test output folder did not contain any JUnit XML results. Searched folders: \(folders)")
     }
 }
 

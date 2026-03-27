@@ -57,7 +57,7 @@ extension XCGradleHarness where Self : XCTestCase {
 
         var actions = actions
         //let isTestAction = testFilter != nil
-        let isTestAction = actions.contains(where: { $0.hasPrefix("test") })
+        let isTestAction = actions.contains(where: { $0.hasPrefix("test") || $0.hasPrefix("connected") })
 
 
         // override test targets so we can specify "SKIP_GRADLE_TEST_TARGET=connectedDebugAndroidTest" and have the tests run against the Android emulator (e.g., using reactivecircus/android-emulator-runner@v2 with CI)
@@ -126,7 +126,13 @@ extension XCGradleHarness where Self : XCTestCase {
 
                 // if any of the actions are a test case, when try to parse the XML results
                 if isTestAction {
-                    let testSuites = try parseResults()
+                    let parsedResults = try parseResults()
+                    let testSuites = parsedResults.testSuites
+                    if actions.contains(where: { $0.hasPrefix("connected") }) {
+                        // The Skip CLI still expects the canonical unit-test JUnit path.
+                        // Copy the connected run's native JUnit files there for downstream reporting.
+                        try stageConnectedJUnitResultsForSkipCLI(dir: dir, moduleName: baseModuleName, resultFiles: parsedResults.resultFiles)
+                    }
                     // the absense of any test data probably indicates some sort of mis-configuration or else a build failure
                     if testSuites.isEmpty {
                         XCTFail("No tests were run; this may indicate an issue with running the tests on \(deviceID ?? "Robolectric"). See the test output and Report Navigator log for details.")
@@ -152,6 +158,30 @@ extension XCGradleHarness where Self : XCTestCase {
                     throw GradleBuildError(errorDescription: "Gradle failed with result: \(testProcessResult?.description ?? "")")
                 }
             }
+        }
+    }
+
+    private func stageConnectedJUnitResultsForSkipCLI(dir: URL, moduleName: String, resultFiles: [URL]) throws {
+        let buildRoot = dir
+            .appendingPathComponent(moduleName, isDirectory: true)
+            .appendingPathComponent(".build", isDirectory: true)
+            .appendingPathComponent(moduleName, isDirectory: true)
+        let junitTaskFolderName = GradleDriver.unitTestResultFolderName(forConnectedResultFiles: resultFiles)
+        let junitResultRoot = buildRoot
+            .appendingPathComponent("test-results", isDirectory: true)
+            .appendingPathComponent(junitTaskFolderName, isDirectory: true)
+
+        let fm = FileManager.default
+        if fm.fileExists(atPath: junitResultRoot.path) {
+            try fm.removeItem(at: junitResultRoot)
+        }
+        try fm.createDirectory(at: junitResultRoot, withIntermediateDirectories: true)
+
+        for sourceURL in resultFiles {
+            let fileName = sourceURL.lastPathComponent.replacingOccurrences(of: " ", with: "_")
+            let destinationURL = junitResultRoot.appendingPathComponent(fileName)
+            let data = try Data(contentsOf: sourceURL)
+            try data.write(to: destinationURL)
         }
     }
 

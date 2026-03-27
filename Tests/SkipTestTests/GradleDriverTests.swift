@@ -1,7 +1,7 @@
 // Copyright 2023–2026 Skip
 import XCTest
 @testable import SkipTest
-import SkipDrive
+@testable import SkipDrive
 
 #if os(macOS)
 #if !SKIP
@@ -16,6 +16,155 @@ final class GradleDriverTests: XCTestCase {
         }
 
         let _ = line
+    }
+
+    // Verifies connected Android tests fall back to the AGP output folder when unit-test results are absent.
+    func testParseConnectedAndroidTestResultsFallback() throws {
+        let tempRoot = try FileManager.default.createTmpDir(name: "ConnectedGradleResults")
+        let testResultsFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/test-results", isDirectory: true)
+        let connectedDebugFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/outputs/androidTest-results/connected/debug", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: connectedDebugFolder, withIntermediateDirectories: true)
+
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.ReproKitTests" tests="1" failures="0" errors="0" skipped="0" time="0.123">
+          <testcase name="testConnected" classname="skip.repro.ReproKitTests" time="0.123"/>
+        </testsuite>
+        """
+        let xmlURL = connectedDebugFolder.appendingPathComponent("TEST-skip.repro.ReproKitTests.xml")
+        try Data(xml.utf8).write(to: xmlURL)
+
+        let parsed = try GradleDriver.parseTestResults(in: GradleDriver.testResultFolders(for: testResultsFolder, actions: ["connectedDebugAndroidTest"]))
+
+        XCTAssertEqual(1, parsed.testSuites.count)
+        XCTAssertEqual(1, parsed.resultFiles.count)
+        XCTAssertEqual("skip.repro.ReproKitTests", parsed.testSuites.first?.name)
+        XCTAssertEqual(1, parsed.testSuites.first?.tests)
+        XCTAssertEqual(0, parsed.testSuites.first?.failures)
+        XCTAssertEqual(0, parsed.testSuites.first?.errors)
+    }
+
+    // Verifies connected Android runs prefer instrumented-test XML over stale unit-test XML in the canonical folder.
+    func testConnectedAndroidResultsIgnoreUnitTestOutput() throws {
+        let tempRoot = try FileManager.default.createTmpDir(name: "ConnectedGradleResultSelection")
+        let testResultsFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/test-results", isDirectory: true)
+        let unitTestFolder = testResultsFolder
+            .appendingPathComponent("testDebugUnitTest", isDirectory: true)
+        let connectedDebugFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/outputs/androidTest-results/connected/debug", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: unitTestFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: connectedDebugFolder, withIntermediateDirectories: true)
+
+        let unitXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.UnitTests" tests="1" failures="0" errors="0" skipped="0" time="0.123">
+          <testcase name="testUnit" classname="skip.repro.UnitTests" time="0.123"/>
+        </testsuite>
+        """
+        try Data(unitXML.utf8).write(to: unitTestFolder.appendingPathComponent("TEST-skip.repro.UnitTests.xml"))
+
+        let connectedXML = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.ConnectedTests" tests="1" failures="0" errors="0" skipped="0" time="0.123">
+          <testcase name="testConnected" classname="skip.repro.ConnectedTests" time="0.123"/>
+        </testsuite>
+        """
+        try Data(connectedXML.utf8).write(to: connectedDebugFolder.appendingPathComponent("TEST-skip.repro.ConnectedTests.xml"))
+
+        let parsed = try GradleDriver.parseTestResults(in: GradleDriver.testResultFolders(for: testResultsFolder, actions: ["connectedDebugAndroidTest"]))
+
+        XCTAssertEqual(1, parsed.testSuites.count)
+        XCTAssertEqual("skip.repro.ConnectedTests", parsed.testSuites.first?.name)
+        XCTAssertEqual("TEST-skip.repro.ConnectedTests.xml", parsed.resultFiles.first?.lastPathComponent)
+    }
+
+    // Verifies flavored connected tasks resolve results from the matching variant folder such as freeDebug.
+    func testConnectedAndroidResultFoldersSupportFlavorVariants() throws {
+        let tempRoot = try FileManager.default.createTmpDir(name: "ConnectedGradleFlavorResults")
+        let testResultsFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/test-results", isDirectory: true)
+        let flavoredFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/outputs/androidTest-results/connected/freeDebug", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: flavoredFolder, withIntermediateDirectories: true)
+
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.FreeDebugTests" tests="1" failures="0" errors="0" skipped="0" time="0.123">
+          <testcase name="testConnected" classname="skip.repro.FreeDebugTests" time="0.123"/>
+        </testsuite>
+        """
+        let xmlURL = flavoredFolder.appendingPathComponent("TEST-skip.repro.FreeDebugTests.xml")
+        try Data(xml.utf8).write(to: xmlURL)
+
+        let parsed = try GradleDriver.parseTestResults(in: GradleDriver.testResultFolders(for: testResultsFolder, actions: ["connectedFreeDebugAndroidTest"]))
+
+        XCTAssertEqual("freeDebug", GradleDriver.connectedTestVariant(for: "connectedFreeDebugAndroidTest"))
+        XCTAssertEqual("skip.repro.FreeDebugTests", parsed.testSuites.first?.name)
+        XCTAssertEqual("TEST-skip.repro.FreeDebugTests.xml", parsed.resultFiles.first?.lastPathComponent)
+    }
+
+    // Verifies custom instrumented test build types resolve both the connected result folder and staged JUnit folder name.
+    func testConnectedAndroidResultFoldersSupportCustomTestBuildType() throws {
+        let tempRoot = try FileManager.default.createTmpDir(name: "ConnectedGradleStageResults")
+        let testResultsFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/test-results", isDirectory: true)
+        let stagedFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/outputs/androidTest-results/connected/stage", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: stagedFolder, withIntermediateDirectories: true)
+
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.StageTests" tests="1" failures="0" errors="0" skipped="0" time="0.123">
+          <testcase name="testConnected" classname="skip.repro.StageTests" time="0.123"/>
+        </testsuite>
+        """
+        let xmlURL = stagedFolder.appendingPathComponent("TEST-skip.repro.StageTests.xml")
+        try Data(xml.utf8).write(to: xmlURL)
+
+        let parsed = try GradleDriver.parseTestResults(in: GradleDriver.testResultFolders(for: testResultsFolder, actions: ["connectedStageAndroidTest"]))
+
+        XCTAssertEqual("stage", GradleDriver.connectedTestVariant(for: "connectedStageAndroidTest"))
+        XCTAssertEqual("testStageUnitTest", GradleDriver.unitTestResultFolderName(forConnectedResultFiles: parsed.resultFiles))
+        XCTAssertEqual("skip.repro.StageTests", parsed.testSuites.first?.name)
+    }
+
+    // Verifies connected Android failures still parse when AGP omits the failure message attribute.
+    func testConnectedAndroidFailuresWithoutMessageAttribute() throws {
+        let tempRoot = try FileManager.default.createTmpDir(name: "ConnectedGradleFailureResults")
+        let testResultsFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/test-results", isDirectory: true)
+        let connectedDebugFolder = tempRoot
+            .appendingPathComponent(".build/ReproKit/outputs/androidTest-results/connected/debug", isDirectory: true)
+
+        try FileManager.default.createDirectory(at: connectedDebugFolder, withIntermediateDirectories: true)
+
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <testsuite name="skip.repro.ReproKitTests" tests="1" failures="1" errors="0" skipped="0" time="0.123">
+          <testcase name="testConnected" classname="skip.repro.ReproKitTests" time="0.123">
+            <failure>java.lang.AssertionError: 1 != 2
+        at org.junit.Assert.fail(Assert.java:89)
+        at skip.unit.XCTestCase.XCTAssertEqual(XCTest.kt:65)
+        at skip.repro.ReproKitTests.testConnected$ReproKit_debugAndroidTest(ReproKitTests.kt:21)
+            </failure>
+          </testcase>
+        </testsuite>
+        """
+        let xmlURL = connectedDebugFolder.appendingPathComponent("TEST-skip.repro.ReproKitTests.xml")
+        try Data(xml.utf8).write(to: xmlURL)
+
+        let parsed = try GradleDriver.parseTestResults(in: GradleDriver.testResultFolders(for: testResultsFolder, actions: ["connectedDebugAndroidTest"]))
+
+        let failure = try XCTUnwrap(parsed.testSuites.first?.testCases.first?.failures.first)
+        XCTAssertEqual("java.lang.AssertionError: 1 != 2", failure.message)
+        XCTAssertTrue(failure.contents?.contains("testConnected$ReproKit_debugAndroidTest") == true)
     }
 
     /// Initialize a new Gradle project with the Kotlin DSL and run the test cases,
@@ -98,8 +247,8 @@ final class GradleDriverTests: XCTestCase {
 
             let results = try parseResults()
 
-            XCTAssertEqual(1, results.count)
-            let firstResult = try XCTUnwrap(results.first)
+            XCTAssertEqual(1, results.testSuites.count)
+            let firstResult = try XCTUnwrap(results.testSuites.first)
 
             // failFast should max the error count at 1, but it doesn't seem to work — maybe related to https://github.com/gradle/gradle/issues/4562
             let expectedFailCount = (failure ? 1 : 0) + (error ? 1 : 0)
