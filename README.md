@@ -51,7 +51,7 @@ Both modes map SwiftUI to Jetpack Compose using the [SkipUI](https://github.com/
 
 - **No lock-in.** Skip builds on the officially supported Swift SDK for Android. Your Swift code, packages, and skills work on Android with or without Skip.
 
-- **Free and open source.** No license key, no trial period, no catch.
+- **Free and open source.** Skip is complete free and developed independently from any parent corporation, funded by [your sponsorship](https://skip.dev/sponsor/).
 
 ## Quick Start
 
