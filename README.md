@@ -64,7 +64,8 @@ You can read our own assessment of Skip's strengths at [skip.dev/compare/](https
 Install Skip with [Homebrew](https://brew.sh), verify your environment, and create your first project:
 
 ```shell
-brew install skiptools/skip/skip
+brew tap skiptools/skip
+brew install skip
 skip checkup
 skip create
 ```

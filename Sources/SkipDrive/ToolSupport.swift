@@ -974,7 +974,9 @@ extension Range where Bound == Version {
         defer { posix_spawn_file_actions_destroy(&fileActions) }
 
         if let workingDirectory = workingDirectory?.path {
-            posix_spawn_file_actions_addchdir_np(&fileActions, workingDirectory)
+            // not available on glibc 2.27 in Ubuntu Bionic
+            // https://github.com/swiftlang/swift-corelibs-foundation/issues/4762
+            //posix_spawn_file_actions_addchdir_np(&fileActions, workingDirectory)
         }
 
         var stdinPipe: [Int32] = [-1, -1]
